@@ -3,7 +3,7 @@
   "compilerOptions": {
 
     "types": ["node"],
-    "moduleResolution": "node",
+    "moduleResolution": "nodenext",
     // File Layout
     // "rootDir": "./src",
     // "outDir": "./dist",
