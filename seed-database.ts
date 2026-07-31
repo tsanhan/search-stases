@@ -7,6 +7,7 @@ import {
 } from "@langchain/mongodb";
 import { z } from "zod";
 import "dotenv/config";
+import { Document, DocumentInput } from "langchain";
 
 const client = new MongoClient(process.env.MONGO_ATLAS_URI as string);
 
@@ -64,7 +65,7 @@ async function generateSyntheticStases() {
 
     ${parser.getFormatInstructions()}`;
 
-  console.log("generating synthetic employee records...");
+  console.log("generating synthetic stas records...");
 
   const response = await llm.invoke(prompt);
 
@@ -88,6 +89,35 @@ function createStasSummery(stas: Stas) {
   return summary;
 }
 
+async function createVectorIndex(
+  collection: MongoDBAtlasVectorSearchLibArgs["collection"],
+) {
+  try {
+    await collection.createSearchIndex({
+      name: "stas_vector_index",
+      type: "vectorSearch",
+      definition: {
+        fields: [
+          {
+            type: "vector",
+            path: "embedding",
+            numDimensions: 1536,
+            similarity: "cosine",
+          },
+        ],
+      },
+    });
+
+    console.log("Created Atlas Search vector index.");
+  } catch (error: any) {
+    if (error?.message?.includes("already exists")) {
+      console.log("Vector index already exists.");
+    } else {
+      throw error;
+    }
+  }
+}
+
 async function seedDatabase(): Promise<void> {
   try {
     await client.connect();
@@ -100,34 +130,36 @@ async function seedDatabase(): Promise<void> {
     const collection = db.collection(
       "stas_collection",
     ) as unknown as MongoDBAtlasVectorSearchLibArgs["collection"];
+
     await collection.deleteMany({}); // Clear existing data
 
     const syntheticStases = await generateSyntheticStases();
+    await createVectorIndex(collection);
     console.log("Inserting synthetic employee records into the database...");
 
     const stasWithSummaries = await Promise.all(
-      syntheticStases.map((stas: Stas) => ({
-        pageContent: createStasSummery(stas),
-        metadata: { ...stas },
-      })),
+      syntheticStases.map((stas: Stas) => {
+        const docInput: DocumentInput = {
+          pageContent: createStasSummery(stas),
+          metadata: { ...stas },
+        };
+
+        const doc = new Document(docInput);
+        return doc;
+      }),
     );
 
-    for (const stas of stasWithSummaries) {
-      await MongoDBAtlasVectorSearch.fromDocuments(
-        [stas],
-        new OpenAIEmbeddings(),
-        {
-          collection,
-          indexName: "stas_vector_index",
-          textKey: "pageContent",
-          embeddingKey: "embedding",
-        },
-      );
-
-      console.log(
-        `Inserted record for ${stas.metadata.first_name} ${stas.metadata.last_name}`,
-      );
-    }
+    const args: MongoDBAtlasVectorSearchLibArgs = {
+      collection,
+      indexName: "stas_vector_index",
+      textKey: "embedding_text",
+      embeddingKey: "embedding",
+    };
+    await MongoDBAtlasVectorSearch.fromDocuments(
+      stasWithSummaries,
+      new OpenAIEmbeddings(),
+      args,
+    );
 
     console.log("Database seeding completed successfully.");
   } catch (error) {
